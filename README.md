@@ -2,6 +2,8 @@
 
 Set Apple Music playlist artwork automatically — Spotify-style 2x2 grid from album art, or single cover for smaller playlists.
 
+![Example](vgm.png)
+
 ## Requirements
 
 - macOS with Music.app
