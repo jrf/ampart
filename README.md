@@ -1,12 +1,12 @@
-# Playlist Generator
+# ampart
 
-Set Apple Music playlist artwork using the album art from each playlist's first track.
+Set Apple Music playlist artwork automatically — Spotify-style 2x2 grid from album art, or single cover for smaller playlists.
 
 ## Requirements
 
 - macOS with Music.app
 - Python 3.10+
-- No external dependencies
+- Pillow (`pip install -r requirements.txt`)
 
 ## Usage
 
@@ -25,10 +25,12 @@ python3 set_playlist_artwork.py
 ## What It Does
 
 1. Fetches all user playlists from Music.app
-2. Skips empty playlists, system playlists, and playlists where the first track has no artwork
-3. For each remaining playlist: extracts the first track's album art and sets it as the playlist artwork
+2. For each playlist with 4+ unique albums: creates a 2x2 grid collage
+3. For playlists with fewer: uses the first track's album art
+4. Sets the result as the playlist artwork
 
 ## Notes
 
 - Duplicate playlist names: if two playlists share a name, only the first is updated
 - The `set data of artwork 1` command reports an error but actually works — this is expected
+- Albums are deduplicated so the grid shows 4 distinct covers

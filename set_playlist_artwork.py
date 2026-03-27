@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Set Music.app playlist artwork from each playlist's first track.
+Set Music.app playlist artwork from each playlist's tracks.
 
-Iterates all user playlists in Music.app. For each playlist that has
-at least one track with artwork, extracts the artwork from the first
-track and sets it as the playlist's artwork.
+For playlists with 4+ tracks that have artwork, creates a 2x2 grid
+collage (like Spotify). For playlists with fewer, uses the first
+track's album art.
 
 Uses AppleScript's "set data of artwork 1" which throws an error but
 actually works.
@@ -15,6 +15,8 @@ import os
 import subprocess
 import sys
 import tempfile
+
+from PIL import Image
 
 
 def run_osascript(script: str, timeout: int = 30) -> str:
@@ -71,19 +73,13 @@ def get_playlists() -> list[dict]:
     return json.loads(run_jxa(script))
 
 
-def set_playlist_artwork(playlist_name: str, tmp_path: str) -> bool:
-    """Extract first track's artwork and set it on the playlist.
-
-    The "set data of artwork 1" command throws "error type 1" but
-    actually works — we catch and ignore that specific error.
-    """
+def extract_track_artwork(playlist_name: str, track_index: int, tmp_path: str) -> bool:
+    """Extract a specific track's artwork from a playlist to a temp file."""
     safe_name = playlist_name.replace("\\", "\\\\").replace('"', '\\"')
-
-    # Step 1: Extract artwork from first track to temp file
-    extract_script = f'''
+    script = f'''
     tell application "Music"
         set p to first user playlist whose name is "{safe_name}"
-        set t to first track of p
+        set t to track {track_index + 1} of p
         set artList to artworks of t
         if (count of artList) > 0 then
             set artData to raw data of first artwork of t
@@ -106,16 +102,52 @@ def set_playlist_artwork(playlist_name: str, tmp_path: str) -> bool:
         return "error: " & errMsg
     end try
     '''
-    result = run_osascript(extract_script)
-    if result != "ok":
-        return False
+    result = run_osascript(script)
+    return result == "ok"
 
-    if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
-        return False
 
-    # Step 2: Set artwork on playlist (throws error type 1 but works)
+def get_unique_album_indices(playlist_name: str, max_count: int = 4) -> list[int]:
+    """Get track indices for up to max_count unique albums in a playlist."""
+    safe_name = playlist_name.replace("\\", "\\\\").replace("'", "\\'")
+    script = f"""
+    var music = Application("Music");
+    var p = music.userPlaylists.byName('{safe_name}');
+    var tracks = p.tracks();
+    var seen = {{}};
+    var indices = [];
+    for (var i = 0; i < tracks.length && indices.length < {max_count}; i++) {{
+        try {{
+            if (tracks[i].artworks.length === 0) continue;
+            var album = tracks[i].album();
+            if (!seen[album]) {{
+                seen[album] = true;
+                indices.push(i);
+            }}
+        }} catch(e) {{}}
+    }}
+    JSON.stringify(indices);
+    """
+    return json.loads(run_jxa(script))
+
+
+def make_grid(image_paths: list[str], output_path: str, size: int = 600):
+    """Create a 2x2 grid image from 4 images."""
+    half = size // 2
+    grid = Image.new("RGB", (size, size))
+    for i, path in enumerate(image_paths):
+        img = Image.open(path)
+        img = img.resize((half, half), Image.LANCZOS)
+        x = (i % 2) * half
+        y = (i // 2) * half
+        grid.paste(img, (x, y))
+    grid.save(output_path, "JPEG", quality=90)
+
+
+def apply_artwork(playlist_name: str, image_path: str):
+    """Set artwork on a playlist. Throws error type 1 but works."""
+    safe_name = playlist_name.replace("\\", "\\\\").replace('"', '\\"')
     set_script = f'''
-    set imgData to read (POSIX file "{tmp_path}") as «class PICT»
+    set imgData to read (POSIX file "{image_path}") as «class PICT»
     tell application "Music"
         set p to first user playlist whose name is "{safe_name}"
         set data of artwork 1 of p to imgData
@@ -127,13 +159,43 @@ def set_playlist_artwork(playlist_name: str, tmp_path: str) -> bool:
         text=True,
         timeout=30,
     )
-    # Error type 1 is expected — the command works despite the error
     if result.returncode != 0:
         stderr = result.stderr.strip()
-        if "error of type 1" not in stderr.lower() and "error: an error of type 1" not in stderr.lower():
+        if "error of type 1" not in stderr.lower():
             raise RuntimeError(f"osascript failed: {stderr}")
 
-    return True
+
+def set_playlist_artwork(playlist_name: str, tmp_dir: str) -> bool:
+    """Build artwork for a playlist and apply it.
+
+    Uses a 2x2 grid if 4+ unique albums have artwork, otherwise
+    uses the first track's artwork.
+    """
+    indices = get_unique_album_indices(playlist_name, max_count=4)
+    if not indices:
+        return False
+
+    if len(indices) >= 4:
+        # Extract 4 artworks and make a grid
+        art_paths = []
+        for i, track_idx in enumerate(indices[:4]):
+            path = os.path.join(tmp_dir, f"art_{i}.jpg")
+            if extract_track_artwork(playlist_name, track_idx, path):
+                art_paths.append(path)
+
+        if len(art_paths) == 4:
+            grid_path = os.path.join(tmp_dir, "grid.jpg")
+            make_grid(art_paths, grid_path)
+            apply_artwork(playlist_name, grid_path)
+            return True
+
+    # Fall back to first track's artwork
+    path = os.path.join(tmp_dir, "art_0.jpg")
+    if extract_track_artwork(playlist_name, indices[0], path):
+        apply_artwork(playlist_name, path)
+        return True
+
+    return False
 
 
 def main():
@@ -186,25 +248,18 @@ def main():
         name = p["name"]
         print(f"[{i}/{len(processable)}] {name}...", end=" ", flush=True)
 
-        tmp_path = None
         try:
-            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-                tmp_path = tmp.name
-
-            if set_playlist_artwork(name, tmp_path):
-                print("OK")
-                success_count += 1
-            else:
-                print("SKIP (no artwork on first track)")
-                fail_count += 1
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                if set_playlist_artwork(name, tmp_dir):
+                    print("OK")
+                    success_count += 1
+                else:
+                    print("SKIP (no artwork)")
+                    fail_count += 1
 
         except Exception as e:
             print(f"ERROR ({e})")
             fail_count += 1
-
-        finally:
-            if tmp_path and os.path.exists(tmp_path):
-                os.unlink(tmp_path)
 
     print(f"\nDone. {success_count} updated, {fail_count} failed/skipped.")
 
