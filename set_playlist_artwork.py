@@ -107,20 +107,26 @@ def extract_track_artwork(playlist_name: str, track_index: int, tmp_path: str) -
 
 
 def get_unique_album_indices(playlist_name: str, max_count: int = 4) -> list[int]:
-    """Get track indices for up to max_count unique albums in a playlist."""
+    """Get track indices for up to max_count unique albums/artists in a playlist.
+
+    Deduplicates by both album and artist so the grid shows distinct covers.
+    """
     safe_name = playlist_name.replace("\\", "\\\\").replace("'", "\\'")
     script = f"""
     var music = Application("Music");
     var p = music.userPlaylists.byName('{safe_name}');
     var tracks = p.tracks();
-    var seen = {{}};
+    var seenAlbums = {{}};
+    var seenArtists = {{}};
     var indices = [];
     for (var i = 0; i < tracks.length && indices.length < {max_count}; i++) {{
         try {{
             if (tracks[i].artworks.length === 0) continue;
             var album = tracks[i].album();
-            if (!seen[album]) {{
-                seen[album] = true;
+            var artist = tracks[i].artist();
+            if (!seenAlbums[album] && !seenArtists[artist]) {{
+                seenAlbums[album] = true;
+                seenArtists[artist] = true;
                 indices.push(i);
             }}
         }} catch(e) {{}}
